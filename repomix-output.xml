@@ -1,0 +1,2182 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+src/
+  assistant_core/
+    __init__.py
+    command_parser.py
+    task_runner.py
+  cache/
+    __init__.py
+  core/
+    __init__.py
+    task_spec.py
+  diff/
+    __init__.py
+    diff_engine.py
+    excel_writer.py
+  discovery/
+    __init__.py
+    osm_search.py
+    product_search.py
+    schema_discovery.py
+  extractor/
+    __init__.py
+    html_cleaner.py
+    schema_extractor.py
+  healing/
+    __init__.py
+  llm/
+    __init__.py
+    router.py
+  scraper/
+    __init__.py
+    engine.py
+  storage/
+    __init__.py
+    audit_logger.py
+    db.py
+  strategy/
+    __init__.py
+    strategy_memory.py
+  triangulate/
+    __init__.py
+    triangulator.py
+  ui/
+    app.py
+  __init__.py
+  assistant.py
+  config.py
+  factory.py
+  interfaces.py
+  pipeline.py
+supabase/
+  schema.sql
+tests/
+  unit/
+    test_stealth.py
+.env.example
+.gitignore
+check_apis.py
+debug_yp.py
+diagnose_daraz.py
+README.md
+requirements.txt
+test_pagination.py
+test_vision.py
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="src/assistant_core/__init__.py">
+
+</file>
+
+<file path="src/assistant_core/command_parser.py">
+import json
+import logging
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from llm.router import LLMRouter
+from core.task_spec import TaskSpec
+
+logger = logging.getLogger("command_parser")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def parse_command(user_request: str, router: LLMRouter = None) -> TaskSpec:
+    """
+    Converts plain English into a real TaskSpec (project knowledge Section 11).
+    If the request is materially ambiguous, the LLM is asked to note that in
+    `ambiguity_note` rather than silently guessing on something that matters.
+    """
+    router = router or LLMRouter()
+
+    prompt = f"""You are a task-planning assistant for a lead-generation and research tool.
+Given a user's plain-English request, extract a structured task specification.
+
+User request: "{user_request}"
+
+Respond with ONLY valid JSON in this exact shape:
+{{
+  "search_query": "a good web search query to find relevant sources for this request",
+  "objective": "extract" or "compare" or "lead_gen" or "monitor",
+  "min_records": <integer, how many results the user wants, default 10 if not specified>,
+  "fields": ["list", "of", "data", "fields", "to", "extract", "per", "result"],
+  "filters": "any filtering criteria, niche, email or special conditions mentioned",
+  "location": "a specific city/region/country mentioned in the request, or empty string if none",
+  "entity_name": "the single core business/product/job type this request is about, e.g. 'pizza shop', 'wireless mouse', 'freelance job'",
+  "ambiguity_note": "if this request is materially under-specified (e.g. missing WHICH sites, WHICH country, no clear entity), briefly say what's ambiguous here. Otherwise empty string."
+}}
+
+For requests about finding multiple businesses (leads), craft a natural search_query
+likely to surface pages listing many businesses at once — e.g. "best pizza shops [city]"
+or "pizza shops near me list" — similar in style to how you'd search for product reviews
+or best-of lists. Do NOT use search operators like "site:" — write a normal, natural
+search phrase a person would actually type.
+
+Common field examples depending on request type: for businesses/leads use things like
+business_name, phone, email, address, has_website. For products use title, price,
+availability. For jobs use title, price (rate), description, employer.
+Pick whatever fields genuinely make sense for THIS specific request."""
+
+    result = router.call(prompt)
+    raw_text = result["text"].strip()
+
+    if raw_text.startswith("```"):
+        raw_text = raw_text.split("```")[1]
+        if raw_text.startswith("json"):
+            raw_text = raw_text[4:]
+    raw_text = raw_text.strip()
+
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse command spec: {raw_text}")
+        raise ValueError(f"Could not parse command: {e}")
+
+    ambiguity_note = parsed.get("ambiguity_note", "")
+    if ambiguity_note:
+        logger.warning(f"Ambiguous request: {ambiguity_note}")
+
+    spec = TaskSpec(
+        natural_language_prompt=user_request,
+        source_hint=parsed.get("search_query", ""),
+        objective=parsed.get("objective", "extract"),
+        entity_name=parsed.get("entity_name", ""),
+        fields=parsed.get("fields", ["title", "price", "description"]),
+        filters=parsed.get("filters", ""),
+        location=parsed.get("location", ""),
+        min_records=parsed.get("min_records", 10),
+    )
+    spec.ambiguity_note = ambiguity_note  # dynamic attribute, not persisted in schema yet
+
+    logger.info(f"Parsed command via {result['provider']}: {spec.to_dict()}")
+    return spec
+
+
+if __name__ == "__main__":
+    test_requests = [
+        "generate 15 leads for a website maker, pizza shops niche, need phone, address, email and whether they have a website or not",
+        "find best 10 prices of a Logitech wireless mouse",
+        "get me leads",  # deliberately vague, should trigger ambiguity_note
+    ]
+    for req in test_requests:
+        print(f"\nRequest: {req}")
+        spec = parse_command(req)
+        print(spec.to_json())
+        if spec.ambiguity_note:
+            print(f"⚠ Ambiguity flagged: {spec.ambiguity_note}")
+</file>
+
+<file path="src/assistant_core/task_runner.py">
+import asyncio
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from assistant_core.command_parser import parse_command
+from discovery.product_search import search_products
+from scraper.engine import ScraperEngine
+from extractor.schema_extractor import DataExtractor
+from storage.db import get_tracked_sources, save_tracked_sources, save_run_results
+from diff.diff_engine import get_previous_run, compute_diff
+from diff.excel_writer import write_excel
+from assistant import _scrape_source, _parse_price
+from storage.audit_logger import Timer, log_event
+
+
+async def run_task(user_request: str, client_id: str = "default") -> list[dict]:
+    """
+    The real chatbot entry point: takes a plain-English request,
+    plans it, executes it, and returns structured results.
+    Everything is scoped to client_id, so different clients asking about
+    the same topic get fully independent tracking/history.
+    """
+    with Timer(user_request):
+        return await _run_task_inner(user_request, client_id)
+
+
+async def _run_task_inner(user_request: str, client_id: str = "default") -> list[dict]:
+    spec = parse_command(user_request)
+    spec.client_id = client_id
+    search_query = spec.source_hint
+    target_count = spec.min_records
+    fields = spec.fields
+    notes = spec.filters
+
+    print(f"Plan: search '{search_query}', want ~{target_count} results, fields: {fields}")
+    if getattr(spec, "ambiguity_note", ""):
+        print(f"⚠ Note: {spec.ambiguity_note}")
+
+    max_sources = min(max(3, target_count // 5), 10)
+
+    urls = get_tracked_sources(user_request, client_id=client_id)
+    if urls:
+        print(f"Reusing {len(urls)} previously-tracked source(s) for this client.")
+    else:
+        urls = await search_products(search_query, max_results=max_sources)
+        if urls:
+            save_tracked_sources(user_request, urls, client_id=client_id)
+
+    if not urls:
+        print("No sources found.")
+        return []
+
+    print(f"Scraping {len(urls)} source(s)...\n")
+
+    scraper = ScraperEngine()
+    extractor = DataExtractor()
+
+    tasks = [_scrape_source(scraper, extractor, url, search_query, fields, notes) for url in urls]
+    results_per_source = await asyncio.gather(*tasks)
+    all_items = [item for sublist in results_per_source for item in sublist]
+
+    if "price" in fields:
+        for item in all_items:
+            item["_numeric_price"] = _parse_price(item.get("price"))
+        priced = [i for i in all_items if i["_numeric_price"] is not None]
+        unpriced = [i for i in all_items if i["_numeric_price"] is None]
+        priced.sort(key=lambda i: i["_numeric_price"])
+        for item in priced:
+            del item["_numeric_price"]
+        all_items = priced + unpriced
+
+    print(f"Found {len(all_items)} total matching items.")
+
+    if all_items:
+        previous = get_previous_run(search_query, client_id=client_id)
+        all_items = compute_diff(all_items, previous)
+        save_run_results(search_query, all_items, client_id=client_id)
+
+    log_event("task_completed", query=search_query, details={"result_count": len(all_items), "client_id": client_id})
+    return all_items[:target_count]
+
+
+if __name__ == "__main__":
+    request = "generate 15 leads for a website maker, pizza shops niche, need phone, address, email and whether they have a website or not"
+    results = asyncio.run(run_task(request, client_id="test_client_B"))
+
+    print(f"\nFinal results ({len(results)}):")
+    print("(Note: null fields mean 'not found on the scraped page', not confirmed absent — verify before outreach)")
+    for r in results:
+        print(r)
+
+    if results:
+        write_excel(results, "output_leads.xlsx")
+        print(f"\nSaved to output_leads.xlsx")
+</file>
+
+<file path="src/cache/__init__.py">
+
+</file>
+
+<file path="src/core/__init__.py">
+
+</file>
+
+<file path="src/core/task_spec.py">
+"""
+TaskSpec — the single internal representation every input mode resolves to.
+Per project knowledge Section 11.2. Deliberately a plain dataclass (not a
+framework model) so it stays simple, debuggable, and JSON-serializable for
+Supabase storage.
+"""
+
+from dataclasses import dataclass, field, asdict
+import uuid
+import json
+
+
+@dataclass
+class TaskSpec:
+    task_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    schema_version: str = "1.0"
+    natural_language_prompt: str = ""
+
+    # target
+    start_urls: list[str] = field(default_factory=list)
+    domains: list[str] = field(default_factory=list)
+    source_hint: str = ""
+
+    objective: str = "extract"  # extract | monitor | compare | lead_gen
+
+    # entities
+    entity_name: str = ""
+    record_boundary_hint: str = ""
+    identity_hint: str = ""
+
+    # fields
+    fields: list[str] = field(default_factory=list)
+
+    # constraints
+    filters: str = ""
+    location: str = ""
+
+    # navigation
+    pagination: str = "auto"
+    max_pages: int = 5
+
+    # quality
+    min_records: int = 1
+
+    # output
+    output_format: str = "xlsx"
+
+    # client scoping (our own addition, needed for multi-tenant isolation — Part X)
+    client_id: str = "default"
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TaskSpec":
+        known_fields = {f for f in cls.__dataclass_fields__}
+        filtered = {k: v for k, v in data.items() if k in known_fields}
+        return cls(**filtered)
+
+
+if __name__ == "__main__":
+    spec = TaskSpec(
+        natural_language_prompt="find best 3 prices of wireless mouse",
+        start_urls=[],
+        objective="compare",
+        fields=["title", "price"],
+    )
+    print(spec.to_json())
+</file>
+
+<file path="src/diff/__init__.py">
+
+</file>
+
+<file path="src/diff/diff_engine.py">
+import logging
+import re
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from storage.db import get_client
+
+logger = logging.getLogger("diff_engine")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def _parse_price(price_str) -> float | None:
+    if not price_str:
+        return None
+    match = re.search(r"[\d,]+\.?\d*", str(price_str))
+    return float(match.group().replace(",", "")) if match else None
+
+
+def get_previous_run(query: str, client_id: str = "default", before_run_at=None) -> list[dict]:
+    """Fetches the most recent prior batch of results for this query+client from Supabase."""
+    client = get_client()
+    q = (
+        client.table("run_history")
+        .select("*")
+        .eq("query", query)
+        .eq("client_id", client_id)
+        .order("created_at", desc=True)
+    )
+    response = q.limit(50).execute()
+    rows = response.data
+
+    if not rows:
+        return []
+
+    if before_run_at:
+        rows = [r for r in rows if r["created_at"] < before_run_at]
+
+    if not rows:
+        return []
+
+    latest_batch_time = rows[0]["created_at"]
+    previous_batch = [r for r in rows if r["created_at"] == latest_batch_time]
+    return [r["data"] for r in previous_batch]
+
+
+def _identity_key(item: dict) -> str:
+    """Items can be products, leads, jobs, etc. — use whichever identifying field is present."""
+    return item.get("title") or item.get("business_name") or item.get("job_title") or item.get("name")
+
+
+def compute_diff(current: list[dict], previous: list[dict]) -> list[dict]:
+    """
+    Compares current results against previous results (matched by a stable identity key).
+    Adds a 'diff_status' field to each current item: New, Price Changed, or Unchanged.
+    Also returns any Removed items (present before, missing now).
+    """
+    prev_by_title = {_identity_key(item): item for item in previous if _identity_key(item)}
+    curr_titles = {_identity_key(item) for item in current if _identity_key(item)}
+
+    annotated = []
+    for item in current:
+        title = _identity_key(item)
+        prev_item = prev_by_title.get(title)
+
+        if prev_item is None:
+            item["diff_status"] = "New"
+        else:
+            old_price = _parse_price(prev_item.get("price"))
+            new_price = _parse_price(item.get("price"))
+            if old_price is not None and new_price is not None and old_price != new_price:
+                item["diff_status"] = f"Price Changed (was {prev_item.get('price')})"
+            else:
+                item["diff_status"] = "Unchanged"
+        annotated.append(item)
+
+    removed = [
+        {**item, "diff_status": "Removed"}
+        for title, item in prev_by_title.items()
+        if title not in curr_titles
+    ]
+
+    return annotated + removed
+
+
+if __name__ == "__main__":
+    # Quick manual test with fake data
+    previous = [
+        {"title": "Wireless Mouse A", "price": "$20.00"},
+        {"title": "Wireless Mouse B", "price": "$30.00"},
+    ]
+    current = [
+        {"title": "Wireless Mouse A", "price": "$25.00"},  # price changed
+        {"title": "Wireless Mouse C", "price": "$15.00"},  # new
+        # Mouse B is missing = removed
+    ]
+    result = compute_diff(current, previous)
+    for r in result:
+        print(r)
+</file>
+
+<file path="src/diff/excel_writer.py">
+import time
+import logging
+from pathlib import Path
+import pandas as pd
+from openpyxl.styles import Font, PatternFill
+
+logger = logging.getLogger("excel_writer")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def write_excel(records: list[dict], output_path: str, sheet_name: str = "Data", retries: int = 3):
+    """
+    Writes a list of dicts to a styled .xlsx file.
+    Safe against Windows file-lock errors (e.g. file open in Excel) via
+    write-to-temp + atomic rename, with retry-with-backoff.
+    """
+    output_path = Path(output_path)
+    temp_path = output_path.with_suffix(".tmp.xlsx")
+
+    df = pd.DataFrame(records)
+
+    # Write to a temp file first
+    with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+        worksheet = writer.sheets[sheet_name]
+
+        # Style the header row
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        for cell in worksheet[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+
+        # Auto-fit column widths (rough estimate based on content length)
+        for column_cells in worksheet.columns:
+            max_length = max(len(str(cell.value)) for cell in column_cells)
+            col_letter = column_cells[0].column_letter
+            worksheet.column_dimensions[col_letter].width = max_length + 4
+
+    # Atomically move temp -> real target, retrying if the real file is locked (open in Excel)
+    delay = 2
+    for attempt in range(1, retries + 1):
+        try:
+            temp_path.replace(output_path)
+            logger.info(f"Saved: {output_path}")
+            return
+        except PermissionError:
+            logger.warning(
+                f"'{output_path.name}' is locked (probably open in Excel). "
+                f"Retry {attempt}/{retries} in {delay}s..."
+            )
+            time.sleep(delay)
+            delay *= 2
+
+    raise PermissionError(
+        f"Could not save '{output_path}' after {retries} attempts — "
+        f"please close it if it's open in Excel and try again."
+    )
+
+
+if __name__ == "__main__":
+    sample_records = [
+        {"title": "A Light in the Attic", "price": "£51.77", "availability": "In stock", "rating": "Three"},
+        {"title": "Tipping the Velvet", "price": "£53.74", "availability": "In stock", "rating": "One"},
+    ]
+    write_excel(sample_records, "output.xlsx")
+</file>
+
+<file path="src/discovery/__init__.py">
+
+</file>
+
+<file path="src/discovery/osm_search.py">
+import logging
+import requests
+
+logger = logging.getLogger("osm_search")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+OVERPASS_URL = "https://overpass.kumi.systems/api/interpreter"
+
+
+def search_businesses(keyword: str, location: str, max_results: int = 20) -> list[dict]:
+    """
+    Free, no-API-key business search via OpenStreetMap's Overpass API.
+    Returns real businesses matching `keyword` within `location`, with
+    name, address, phone, website (or None if absent — the lead-qualifying signal), email.
+    """
+    query = f"""
+    [out:json][timeout:25];
+    area["name"="{location}"]->.searchArea;
+    (
+      node["name"~"{keyword}",i](area.searchArea);
+      node["cuisine"~"{keyword}",i](area.searchArea);
+      node["shop"~"{keyword}",i](area.searchArea);
+    );
+    out body {max_results};
+    """
+
+    logger.info(f"Querying OpenStreetMap for '{keyword}' in '{location}'")
+    headers = {
+        "User-Agent": "ACES-Project/1.0 (student portfolio project; contact: your_email@example.com)",
+        "Referer": "https://github.com/your-username/aces",
+        "Accept": "*/*",
+        "Content-Type": "text/plain",
+    }
+    
+    response = requests.post(OVERPASS_URL, data={"data": query}, headers=headers, timeout=30)
+    if response.status_code != 200:
+        print("OVERPASS ERROR RESPONSE:", response.text[:1000])
+    response.raise_for_status()
+    data = response.json()
+
+    results = []
+    for el in data.get("elements", []):
+        tags = el.get("tags", {})
+        name = tags.get("name")
+        if not name:
+            continue
+
+        address_parts = [
+            tags.get("addr:housenumber", ""),
+            tags.get("addr:street", ""),
+            tags.get("addr:city", ""),
+        ]
+        address = " ".join(p for p in address_parts if p).strip() or None
+
+        results.append({
+            "business_name": name,
+            "phone": tags.get("phone") or tags.get("contact:phone"),
+            "address": address,
+            "email": tags.get("email") or tags.get("contact:email"),
+            "website_url": tags.get("website") or tags.get("contact:website"),
+            "has_website": bool(tags.get("website") or tags.get("contact:website")),
+        })
+
+    logger.info(f"Found {len(results)} businesses")
+    return results
+
+
+if __name__ == "__main__":
+    results = search_businesses(keyword="pizza", location="Lahore", max_results=15)
+    for r in results:
+        print(r)
+</file>
+
+<file path="src/discovery/product_search.py">
+import asyncio
+import logging
+import sys
+import os
+from urllib.parse import quote_plus, unquote, urlparse, parse_qs
+from bs4 import BeautifulSoup
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from scraper.engine import ScraperEngine
+
+logger = logging.getLogger("product_search")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def _extract_real_url(ddg_href: str) -> str | None:
+    """DuckDuckGo wraps result links in a redirect — pull the real destination URL out."""
+    ddg_href = ddg_href.strip().strip("'\"")  # strip stray quotes/whitespace
+
+    if ddg_href.startswith("//duckduckgo.com/l/") or "uddg=" in ddg_href:
+        parsed = urlparse(ddg_href if ddg_href.startswith("http") else "https:" + ddg_href)
+        qs = parse_qs(parsed.query)
+        real = qs.get("uddg", [None])[0]
+        return unquote(real).strip("'\"") if real else None
+    if ddg_href.startswith("http"):
+        return ddg_href
+    return None
+
+
+async def search_products(query: str, max_results: int = 5) -> list[str]:
+    """
+    Searches DuckDuckGo for a plain-text query and returns a list of real
+    result URLs. No API key needed.
+    """
+    scraper = ScraperEngine()
+    search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+
+    logger.info(f"Searching: {query}")
+    html = await scraper.fetch_html(search_url)
+
+    soup = BeautifulSoup(html, "lxml")
+    links = soup.select("a.result__a")
+
+    urls = []
+    for link in links:
+        href = link.get("href", "")
+        real_url = _extract_real_url(href)
+        if real_url and real_url not in urls:
+            urls.append(real_url)
+        if len(urls) >= max_results:
+            break
+
+    logger.info(f"Found {len(urls)} results for '{query}'")
+    return urls
+
+
+if __name__ == "__main__":
+    async def main():
+        results = await search_products("best wireless mouse price", max_results=5)
+        for i, url in enumerate(results, 1):
+            print(f"{i}. {url}")
+
+    asyncio.run(main())
+</file>
+
+<file path="src/discovery/schema_discovery.py">
+"""
+Autonomous Schema Discovery — project knowledge Section 12.
+Quick mode: one representative page, LLM proposes record boundary + field
+candidates with a confidence note, before any real extraction commits to them.
+"""
+
+import json
+import logging
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from llm.router import LLMRouter
+from extractor.html_cleaner import clean_html
+import config
+
+logger = logging.getLogger("schema_discovery")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def quick_discover(html: str, entity_name: str, requested_fields: list[str], router: LLMRouter = None) -> dict:
+    """
+    Quick-mode schema discovery: samples the page once, proposes whether it's
+    a listing (repeated records) or a single-record page, and flags which
+    requested fields actually look findable here before extraction runs.
+    """
+    router = router or LLMRouter()
+    trimmed_html = clean_html(html)[:config.HTML_TRUNCATE_LIST]
+
+    prompt = f"""You are a schema discovery engine, looking at a web page BEFORE extraction runs.
+The user wants to find items of type: '{entity_name}'.
+Requested fields: {requested_fields}
+
+HTML:
+{trimmed_html}
+
+Respond with ONLY valid JSON:
+{{
+  "record_boundary": "listing" or "single_record" or "not_relevant",
+  "estimated_record_count": <integer, rough guess how many matching items are on this page>,
+  "field_availability": {{"<field_name>": "likely_present" or "likely_absent" or "uncertain", ...}},
+  "confidence": <float 0-1, how confident you are this page is usable for this request>
+}}"""
+
+    result = router.call(prompt)
+    raw_text = result["text"].strip()
+    if raw_text.startswith("```"):
+        raw_text = raw_text.split("```")[1]
+        if raw_text.startswith("json"):
+            raw_text = raw_text[4:]
+    raw_text = raw_text.strip()
+
+    try:
+        report = json.loads(raw_text)
+    except json.JSONDecodeError as e:
+        logger.error(f"Discovery JSON parse failed: {raw_text}")
+        raise ValueError(f"Discovery did not return valid JSON: {e}")
+
+    logger.info(f"Discovery report via {result['provider']}: {report}")
+    return report
+
+
+if __name__ == "__main__":
+    sample_html = """
+    <html><body>
+        <div class="listing">
+            <div class="item"><h2>Tony's Pizza</h2><span>123 Main St</span></div>
+            <div class="item"><h2>Marco's Pizzeria</h2><span>456 Oak Ave</span></div>
+            <div class="item"><h2>Bella Napoli</h2><span>789 Elm St</span></div>
+        </div>
+    </body></html>
+    """
+    report = quick_discover(
+        sample_html,
+        entity_name="pizza shop",
+        requested_fields=["business_name", "address", "phone", "has_website"],
+    )
+    print(json.dumps(report, indent=2))
+</file>
+
+<file path="src/extractor/__init__.py">
+
+</file>
+
+<file path="src/extractor/html_cleaner.py">
+from bs4 import BeautifulSoup, Comment
+
+
+def clean_html(raw_html: str) -> str:
+    """
+    Strips noise from raw HTML (scripts, styles, nav, ads, comments, tracking
+    attributes) so an LLM sees mostly the meaningful content — critical for
+    fitting large real-world pages (Amazon, Daraz) into a prompt.
+    """
+    soup = BeautifulSoup(raw_html, "lxml")
+
+    # Remove tags that never contain product/content data
+    NOISE_TAGS = ["script", "style", "nav", "footer", "header", "noscript", "svg", "iframe"]
+    for tag in soup(NOISE_TAGS):
+        tag.decompose()
+
+    # Remove HTML comments
+    for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+        comment.extract()
+
+    # Strip attributes that are pure noise for extraction (styling, tracking, event handlers)
+    KEEP_ATTRS = {"href", "src", "alt", "title"}
+    for tag in soup.find_all(True):
+        attrs = dict(tag.attrs)
+        for attr in attrs:
+            if attr not in KEEP_ATTRS:
+                del tag.attrs[attr]
+
+    return str(soup)
+
+
+if __name__ == "__main__":
+    sample = """
+    <html>
+      <head><style>.x{color:red}</style></head>
+      <body>
+        <nav>Home | About</nav>
+        <script>trackUser();</script>
+        <div class="product" onclick="buy()" data-track="xyz">
+            <h2 style="color:blue;">Wireless Mouse</h2>
+            <span>$24.99</span>
+        </div>
+        <!-- an ad slot -->
+        <footer>Copyright 2026</footer>
+      </body>
+    </html>
+    """
+    cleaned = clean_html(sample)
+    print("Original length:", len(sample))
+    print("Cleaned length:", len(cleaned))
+    print("\nCleaned HTML:\n")
+    print(cleaned)
+</file>
+
+<file path="src/extractor/schema_extractor.py">
+import google.generativeai as genai
+import os
+from dotenv import load_dotenv
+load_dotenv()
+from extractor.html_cleaner import clean_html
+import json
+import logging
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+import config
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
+from src.llm.router import LLMRouter
+
+logger = logging.getLogger("data_extractor")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+class DataExtractor:
+    """
+    Uses an LLM to discover a schema and extract structured data from raw HTML,
+    without any hardcoded CSS selectors.
+    """
+
+    def __init__(self, router: LLMRouter = None):
+        self.router = router or LLMRouter()
+
+    def extract(self, html: str, instruction: str) -> dict:
+        # Keep the HTML short-ish for free-tier token limits during dev
+        trimmed_html = clean_html(html)[:config.HTML_TRUNCATE_SINGLE]
+
+        prompt = f"""You are a data extraction engine. Given raw HTML, extract the requested data.
+
+Instruction: {instruction}
+
+HTML:
+{trimmed_html}
+
+Respond with ONLY valid JSON. No explanation, no markdown code fences, just the raw JSON object."""
+
+        result = self.router.call(prompt)
+        raw_text = result["text"]
+
+        # Models sometimes wrap JSON in ```json fences anyway — strip if present
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
+
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON from {result['provider']}: {raw_text}")
+            raise ValueError(f"LLM did not return valid JSON: {e}")
+
+        logger.info(f"Extracted via {result['provider']}: {data}")
+        return data
+
+    def extract_list(self, html: str, instruction: str) -> list[dict]:
+        trimmed_html = clean_html(html)[:config.HTML_TRUNCATE_LIST]
+
+        prompt = f"""You are a data extraction engine. Given raw HTML containing multiple items, extract the requested data for EVERY item found.
+
+Instruction: {instruction}
+
+HTML:
+{trimmed_html}
+
+Respond with ONLY a valid JSON array of objects. No explanation, no markdown code fences, just the raw JSON array."""
+
+        result = self.router.call(prompt)
+        raw_text = result["text"]
+
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
+
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON list from {result['provider']}: {raw_text}")
+            raise ValueError(f"LLM did not return valid JSON array: {e}")
+
+        if not isinstance(data, list):
+            raise ValueError(f"Expected a JSON array, got: {type(data)}")
+
+        logger.info(f"Extracted {len(data)} items via {result['provider']}")
+        return data
+
+
+    def extract_from_image(self, image_bytes: bytes, instruction: str) -> list[dict]:
+        """
+        Vision-based extraction fallback: sends a screenshot directly to Gemini
+        when text-based HTML extraction isn't reliable (heavy JS, canvas rendering,
+        content baked into images). Used for self-healing when normal extraction fails.
+        """
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        model = genai.GenerativeModel("gemini-3.5-flash-lite")
+
+        prompt = f"""You are looking at a screenshot of a webpage. {instruction}
+Return ONLY a valid JSON array of objects. No explanation, no markdown fences."""
+
+        image_part = {"mime_type": "image/png", "data": image_bytes}
+        response = model.generate_content([prompt, image_part])
+        raw_text = response.text.strip()
+
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```")[1]
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:]
+        raw_text = raw_text.strip()
+
+        try:
+            data = json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse vision JSON: {raw_text}")
+            raise ValueError(f"Vision model did not return valid JSON: {e}")
+
+        if not isinstance(data, list):
+            raise ValueError(f"Expected a JSON array from vision extraction, got: {type(data)}")
+
+        logger.info(f"Vision-extracted {len(data)} items")
+        return data
+
+if __name__ == "__main__":
+    sample_html = """
+    <html><body>
+        <div class="product">
+            <h2>Wireless Mouse</h2>
+            <span class="price">$24.99</span>
+            <span class="rating">4.5 stars</span>
+        </div>
+        <div class="product">
+            <h2>Mechanical Keyboard</h2>
+            <span class="price">$75.00</span>
+            <span class="rating">4.8 stars</span>
+        </div>
+    </body></html>
+    """
+
+    extractor = DataExtractor()
+    
+    # Testing the single extraction
+    single_data = extractor.extract(
+        html=sample_html,
+        instruction="Extract the first product name, price, and rating as JSON with keys: name, price, rating"
+    )
+    print("\nExtracted single data:")
+    print(json.dumps(single_data, indent=2))
+
+    # Testing the list extraction
+    list_data = extractor.extract_list(
+        html=sample_html,
+        instruction="Extract all products. For each, get the name, price, and rating. Keys should be: name, price, rating"
+    )
+    print("\nExtracted list data:")
+    print(json.dumps(list_data, indent=2))
+</file>
+
+<file path="src/healing/__init__.py">
+
+</file>
+
+<file path="src/llm/__init__.py">
+
+</file>
+
+<file path="src/llm/router.py">
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+import os
+import logging
+import sys
+from dotenv import load_dotenv
+from openai import OpenAI
+import google.generativeai as genai
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+import config
+
+
+load_dotenv()
+logger = logging.getLogger("llm_router")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+class LLMRouter:
+    """
+    Provider-agnostic LLM caller. Tries providers in order until one succeeds.
+    This is the single entry point the rest of the project uses to talk to any LLM.
+    """
+
+    def __init__(self):
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        self._gemini_model = genai.GenerativeModel(config.GEMINI_MODEL)
+
+        self._groq_client = OpenAI(
+            api_key=os.getenv("GROQ_API_KEY"),
+            base_url="https://api.groq.com/openai/v1",
+        )
+
+        self._openrouter_client = OpenAI(
+            api_key=os.getenv("OPENROUTER_API_KEY"),
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+        self._providers = config.LLM_PROVIDER_ORDER
+
+    def _call_gemini(self, prompt: str) -> str:
+        response = self._gemini_model.generate_content(prompt)
+        return response.text.strip()
+
+    def _call_groq(self, prompt: str) -> str:
+        response = self._groq_client.chat.completions.create(
+        model=config.GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content.strip()
+
+    def _call_openrouter(self, prompt: str) -> str:
+        response = self._openrouter_client.chat.completions.create(
+        model=config.OPENROUTER_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content.strip()
+
+    def call(self, prompt: str, timeout: int = None) -> dict:
+        """
+        Tries each provider in order until one succeeds.
+        Each provider gets `timeout` seconds before we give up and move to the next.
+        Returns {"text": ..., "provider": ...} on success.
+        Raises RuntimeError if every provider fails.
+        """
+        dispatch = {
+            "gemini": self._call_gemini,
+            "groq": self._call_groq,
+            "openrouter": self._call_openrouter,
+        }
+
+        timeout = timeout or config.LLM_TIMEOUT_SECONDS
+        errors = {}
+        for name in self._providers:
+            logger.info(f"Trying provider: {name}")
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(dispatch[name], prompt)
+                try:
+                    text = future.result(timeout=timeout)
+                    logger.info(f"Success via {name}")
+                    return {"text": text, "provider": name}
+                except FutureTimeoutError:
+                    logger.warning(f"{name} timed out after {timeout}s")
+                    errors[name] = f"timed out after {timeout}s"
+                except Exception as e:
+                    logger.warning(f"{name} failed: {e}")
+                    errors[name] = str(e)
+
+        raise RuntimeError(f"All providers failed: {errors}")
+
+
+if __name__ == "__main__":
+    router = LLMRouter()
+    result = router.call("Reply with one short sentence confirming you are working.")
+    print(f"\nProvider used: {result['provider']}")
+    print(f"Response: {result['text']}")
+</file>
+
+<file path="src/scraper/__init__.py">
+
+</file>
+
+<file path="src/scraper/engine.py">
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from strategy.strategy_memory import get_strategy, record_failure_and_adapt
+from playwright_stealth import Stealth
+import asyncio
+import logging
+from playwright.async_api import async_playwright
+import config
+from strategy.strategy_memory import get_strategy, record_failure_and_adapt, wait_for_rate_limit
+
+logger = logging.getLogger("scraper_engine")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+class ScraperEngine:
+    """
+    Handles visiting a URL with a real browser and returning its HTML.
+    Concurrency is capped so we never open more than N browser tabs at once.
+    """
+
+    def __init__(self, max_concurrent: int = None, headless: bool = True):
+        max_concurrent = max_concurrent or config.MAX_CONCURRENT_BROWSERS
+        self.max_concurrent = max_concurrent
+        self.headless = headless
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def fetch_html(self, url: str, timeout: int = None) -> str:
+        async with self._semaphore:
+            strategy = get_strategy(url)
+            effective_timeout = timeout or strategy.get("timeout", config.DEFAULT_TIMEOUT_MS)
+
+            logger.info(f"Fetching: {url} (timeout={effective_timeout}ms)")
+
+            await wait_for_rate_limit(url)
+
+            async with Stealth().use_async(async_playwright()) as p:
+                browser = await p.chromium.launch(headless=self.headless)
+                page = await browser.new_page(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1366, "height": 768},
+                )
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=effective_timeout)
+                    await page.wait_for_timeout(1500)
+                    html = await page.content()
+                    logger.info(f"Success: {url} ({len(html)} chars)")
+                    return html
+                except Exception as e:
+                    logger.warning(f"Failed on {url}, adapting strategy: {e}")
+                    record_failure_and_adapt(url, strategy)
+                    raise
+                finally:
+                    await browser.close()
+
+
+    async def fetch_screenshot(self, url: str, timeout: int = None) -> bytes:
+        """Returns a PNG screenshot of the rendered page, for vision-based extraction."""
+        async with self._semaphore:
+            strategy = get_strategy(url)
+            effective_timeout = timeout or strategy.get("timeout", config.DEFAULT_TIMEOUT_MS)
+
+            logger.info(f"Screenshotting: {url}")
+
+            async with Stealth().use_async(async_playwright()) as p:
+                browser = await p.chromium.launch(headless=self.headless)
+                page = await browser.new_page(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1366, "height": 768},
+                )
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=effective_timeout)
+                    await page.wait_for_timeout(1500)
+                    screenshot_bytes = await page.screenshot(full_page=False)
+                    logger.info(f"Screenshot captured: {url} ({len(screenshot_bytes)} bytes)")
+                    return screenshot_bytes
+                except Exception as e:
+                    logger.warning(f"Screenshot failed on {url}: {e}")
+                    record_failure_and_adapt(url, strategy)
+                    raise
+                finally:
+                    await browser.close()
+
+
+    async def fetch_paginated(self, start_url: str, max_pages: int = 5, next_link_selector: str = "a[rel='next']") -> list[str]:
+        """
+        Follows 'next page' links up to max_pages, returning HTML from each page.
+        Stops early on: no next link found, or two consecutive pages look identical
+        (no-progress detection — project knowledge Section 14.3).
+        """
+        async with self._semaphore:
+            strategy = get_strategy(start_url)
+            effective_timeout = strategy.get("timeout", config.DEFAULT_TIMEOUT_MS)
+
+            pages_html = []
+            async with Stealth().use_async(async_playwright()) as p:
+                browser = await p.chromium.launch(headless=self.headless)
+                page = await browser.new_page(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1366, "height": 768},
+                )
+                try:
+                    current_url = start_url
+                    for page_num in range(max_pages):
+                        logger.info(f"Fetching page {page_num + 1}/{max_pages}: {current_url}")
+                        await wait_for_rate_limit(current_url)
+                        await page.goto(current_url, wait_until="domcontentloaded", timeout=effective_timeout)
+                        await page.wait_for_timeout(1500)
+                        html = await page.content()
+
+                        if pages_html and html == pages_html[-1]:
+                            logger.warning("No-progress detected (identical page content) — stopping pagination.")
+                            break
+                        pages_html.append(html)
+
+                        next_href = None
+                        try:
+                            next_el = await page.query_selector(next_link_selector)
+                            if next_el:
+                                next_href = await next_el.get_attribute("href")
+                        except Exception:
+                            pass
+
+                        if not next_href:
+                            logger.info("No next-page link found — stopping pagination.")
+                            break
+
+                        current_url = next_href if next_href.startswith("http") else f"{page.url.split('?')[0].rsplit('/', 1)[0]}/{next_href.lstrip('/')}"
+
+                    return pages_html
+                except Exception as e:
+                    logger.warning(f"Pagination failed: {e}")
+                    record_failure_and_adapt(start_url, strategy)
+                    return pages_html
+                finally:
+                    await browser.close()
+
+async def _demo():
+    engine = ScraperEngine()
+    html = await engine.fetch_html("https://example.com")
+    print(f"\nGot {len(html)} characters of HTML.")
+    print("First 300 chars:\n")
+    print(html[:300])
+
+
+if __name__ == "__main__":
+    asyncio.run(_demo())
+</file>
+
+<file path="src/storage/__init__.py">
+
+</file>
+
+<file path="src/storage/audit_logger.py">
+import logging
+import time
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from storage.db import get_client
+
+logger = logging.getLogger("audit_logger")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def log_event(event: str, provider: str = None, query: str = None, details: dict = None):
+    """Records an event to Supabase audit_logs — non-blocking best-effort, never raises."""
+    try:
+        client = get_client()
+        client.table("audit_logs").insert({
+            "event": event,
+            "provider": provider,
+            "query": query,
+            "details": details or {},
+        }).execute()
+    except Exception as e:
+        logger.warning(f"Audit log failed (non-fatal): {e}")
+
+
+class Timer:
+    """Simple context manager to measure and log how long a task_runner run took."""
+    def __init__(self, query: str):
+        self.query = query
+        self.start = None
+
+    def __enter__(self):
+        self.start = time.time()
+        log_event("run_started", query=self.query)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        elapsed = round(time.time() - self.start, 2)
+        if exc_type:
+            log_event("run_failed", query=self.query, details={"elapsed_seconds": elapsed, "error": str(exc_val)})
+        else:
+            log_event("run_completed", query=self.query, details={"elapsed_seconds": elapsed})
+
+
+if __name__ == "__main__":
+    with Timer("test query"):
+        time.sleep(1)
+        print("Simulated work done.")
+</file>
+
+<file path="src/storage/db.py">
+import os
+import logging
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
+load_dotenv()
+logger = logging.getLogger("db")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def get_client() -> Client:
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+    return create_client(url, key)
+
+
+def save_run_results(query: str, results: list[dict], client_id: str = "default"):
+    """Saves each extracted item as a row in run_history, scoped to a client."""
+    client = get_client()
+    rows = [
+        {"query": query, "source_url": item.get("source_url"), "data": item, "client_id": client_id}
+        for item in results
+    ]
+    response = client.table("run_history").insert(rows).execute()
+    logger.info(f"Saved {len(rows)} rows to run_history (client: {client_id})")
+    return response
+
+
+def get_tracked_sources(query: str, client_id: str = "default") -> list[str]:
+    """Returns previously-used source URLs for this query, scoped to a client."""
+    client = get_client()
+    response = (
+        client.table("tracked_sources")
+        .select("url")
+        .eq("query", query)
+        .eq("client_id", client_id)
+        .execute()
+    )
+    return [row["url"] for row in response.data]
+
+
+def save_tracked_sources(query: str, urls: list[str], client_id: str = "default"):
+    """Remembers which URLs were used for this query, scoped to a client."""
+    client = get_client()
+    rows = [{"query": query, "url": url, "client_id": client_id} for url in urls]
+    client.table("tracked_sources").upsert(rows, on_conflict="query,url,client_id").execute()
+    logger.info(f"Tracked {len(urls)} source(s) for '{query}' (client: {client_id})")
+
+
+if __name__ == "__main__":
+    test_results = [
+        {"title": "Test Product", "price": "$9.99", "source_url": "https://example.com"}
+    ]
+    save_run_results("connectivity test", test_results)
+    print("If no error appeared above, Supabase connection works.")
+</file>
+
+<file path="src/strategy/__init__.py">
+
+</file>
+
+<file path="src/strategy/strategy_memory.py">
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+import config
+import logging
+from urllib.parse import urlparse
+import sys
+import os
+import time
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from storage.db import get_client
+
+logger = logging.getLogger("strategy_memory")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+DEFAULT_STRATEGY = {"timeout": config.DEFAULT_TIMEOUT_MS}
+
+
+def _domain_of(url: str) -> str:
+    return urlparse(url).netloc
+
+
+def get_strategy(url: str) -> dict:
+    """Fetches the known-good strategy for this domain, or returns sensible defaults."""
+    domain = _domain_of(url)
+    client = get_client()
+    response = client.table("strategies").select("*").eq("domain", domain).execute()
+
+    if response.data:
+        logger.info(f"Using saved strategy for {domain}: {response.data[0]['strategy']}")
+        return response.data[0]["strategy"]
+
+    return DEFAULT_STRATEGY.copy()
+
+
+def save_strategy(url: str, strategy: dict):
+    """Saves/updates the working strategy for this domain."""
+    domain = _domain_of(url)
+    client = get_client()
+    client.table("strategies").upsert({"domain": domain, "strategy": strategy}).execute()
+    logger.info(f"Saved strategy for {domain}: {strategy}")
+
+
+def record_failure_and_adapt(url: str, current_strategy: dict) -> dict:
+    """
+    Called after a failure. Increases the timeout as the simplest adaptive
+    strategy, saves it, and returns the new strategy to retry with.
+    """
+    domain = _domain_of(url)
+    new_timeout = min(
+        current_strategy.get("timeout", config.DEFAULT_TIMEOUT_MS) + config.STRATEGY_TIMEOUT_INCREMENT_MS,
+        config.STRATEGY_MAX_TIMEOUT_MS,
+    )
+    new_strategy = {**current_strategy, "timeout": new_timeout}
+    save_strategy(url, new_strategy)
+    logger.info(f"Adapted strategy for {domain}: timeout now {new_timeout}ms")
+    return new_strategy
+
+
+if __name__ == "__main__":
+    test_url = "https://www.daraz.pk/mouse/"
+    strategy = get_strategy(test_url)
+    print("Current strategy:", strategy)
+
+    adapted = record_failure_and_adapt(test_url, strategy)
+    print("Adapted strategy after simulated failure:", adapted)
+
+    refetched = get_strategy(test_url)
+    print("Re-fetched from Supabase:", refetched)
+
+
+_last_request_time: dict[str, float] = {}  # in-process cache, domain -> timestamp
+
+
+async def wait_for_rate_limit(url: str):
+    """
+    Enforces the domain's current pacing interval before a request goes out.
+    Per project knowledge Section 15.6: starts at 1000ms, decays on success,
+    doubles on repeated failure (handled via the strategy's own interval field).
+    """
+    import asyncio
+    domain = _domain_of(url)
+    strategy = get_strategy(url)
+    interval_ms = strategy.get("pacing_interval_ms", 1000)
+
+    last_time = _last_request_time.get(domain, 0)
+    elapsed = (time.time() - last_time) * 1000
+    if elapsed < interval_ms:
+        wait_time = (interval_ms - elapsed) / 1000
+        logger.info(f"Rate-limit pacing: waiting {wait_time:.1f}s before hitting {domain} again")
+        await asyncio.sleep(wait_time)
+
+    _last_request_time[domain] = time.time()
+
+
+def record_rate_limit_hit(url: str):
+    """Call this when a 429 or rate-limit signal is detected — doubles the pacing interval."""
+    strategy = get_strategy(url)
+    current_interval = strategy.get("pacing_interval_ms", 1000)
+    new_interval = min(current_interval * 2, 30000)
+    strategy["pacing_interval_ms"] = new_interval
+    save_strategy(url, strategy)
+    logger.warning(f"Rate limit hit on {_domain_of(url)} — pacing interval now {new_interval}ms")
+</file>
+
+<file path="src/triangulate/__init__.py">
+
+</file>
+
+<file path="src/triangulate/triangulator.py">
+import asyncio
+import re
+import logging
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from scraper.engine import ScraperEngine
+from extractor.schema_extractor import DataExtractor
+
+logger = logging.getLogger("triangulator")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+def _parse_price(price_str) -> float | None:
+    """Pulls the first numeric value out of a price string like '£51.77' or '$24.99'."""
+    if not price_str:
+        return None
+    match = re.search(r"[\d,]+\.?\d*", str(price_str))
+    if not match:
+        return None
+    return float(match.group().replace(",", ""))
+
+
+class Triangulator:
+    """
+    Scrapes the same product across multiple independent source URLs and
+    computes a per-source confidence score based on how closely prices agree.
+    """
+
+    def __init__(self):
+        self.scraper = ScraperEngine()
+        self.extractor = DataExtractor()
+
+    async def _scrape_one(self, url: str, instruction: str) -> dict:
+        try:
+            html = await self.scraper.fetch_html(url)
+            data = self.extractor.extract(html=html, instruction=instruction)
+            data["source_url"] = url
+            data["status"] = "ok"
+            return data
+        except Exception as e:
+            logger.warning(f"Failed on {url}: {e}")
+            return {"source_url": url, "status": "failed", "error": str(e)}
+
+    async def triangulate(self, urls: list[str], instruction: str, price_field: str = "price") -> list[dict]:
+        tasks = [self._scrape_one(url, instruction) for url in urls]
+        results = await asyncio.gather(*tasks)
+
+        ok_results = [r for r in results if r.get("status") == "ok"]
+        prices = [p for r in ok_results if (p := _parse_price(r.get(price_field))) is not None]
+
+        if prices:
+            avg_price = sum(prices) / len(prices)
+            for r in ok_results:
+                p = _parse_price(r.get(price_field))
+                if p is not None and avg_price > 0:
+                    deviation = abs(p - avg_price) / avg_price
+                    r["confidence_score"] = round(max(0, 1 - deviation), 2)
+                else:
+                    r["confidence_score"] = None
+            consensus = f"{len(prices)}/{len(urls)} sources returned usable price data"
+        else:
+            consensus = "No sources returned usable price data"
+
+        for r in results:
+            r["source_consensus"] = consensus
+
+        return results
+
+
+if __name__ == "__main__":
+    # Demo: 3 different book pages, treated as if they were 3 "sources" for the same product.
+    # Real cross-retailer matching (e.g. same product on Daraz + Amazon) comes once
+    # the search/URL-discovery step is built.
+    urls = [
+        "https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html",
+        "https://books.toscrape.com/catalogue/tipping-the-velvet_999/index.html",
+        "https://books.toscrape.com/catalogue/soumission_998/index.html",
+    ]
+    instruction = "Extract the book title and price as JSON with keys: title, price"
+
+    async def main():
+        t = Triangulator()
+        results = await t.triangulate(urls, instruction)
+        for r in results:
+            print(r)
+
+    asyncio.run(main())
+</file>
+
+<file path="src/ui/app.py">
+import asyncio
+import sys as _sys
+if _sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+import streamlit as st
+import sys
+import os
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from assistant import find_best_prices
+from diff.diff_engine import get_previous_run, compute_diff
+from diff.excel_writer import write_excel
+from storage.db import save_run_results
+
+st.set_page_config(page_title="ACES - Price Finder", page_icon="🔍", layout="centered")
+
+st.markdown("""
+<style>
+    .main .block-container { max-width: 720px; padding-top: 2.5rem; }
+    .aces-title { font-size: 2.1rem; font-weight: 700; margin-bottom: 0; }
+    .aces-subtitle { color: #888; font-size: 1rem; margin-top: 0.2rem; margin-bottom: 2rem; }
+    .result-card {
+        background: #1e1e1e; border: 1px solid #333; border-radius: 12px;
+        padding: 1.1rem 1.4rem; margin-bottom: 0.9rem;
+    }
+    .result-title { font-size: 1.05rem; font-weight: 600; margin-bottom: 0.15rem; }
+    .result-source { font-size: 0.8rem; color: #888; margin-bottom: 0.5rem; }
+    .result-price { font-size: 1.4rem; font-weight: 700; color: #4ade80; }
+    .badge {
+        display: inline-block; padding: 0.15rem 0.65rem; border-radius: 999px;
+        font-size: 0.75rem; font-weight: 600; margin-top: 0.4rem;
+    }
+    .badge-new { background: #14532d; color: #4ade80; }
+    .badge-changed { background: #713f12; color: #fbbf24; }
+    .badge-removed { background: #7f1d1d; color: #f87171; }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown('<div class="aces-title">🔍 ACES Price Finder</div>', unsafe_allow_html=True)
+st.markdown('<div class="aces-subtitle">Describe what you want. Get real results from multiple sources, ranked.</div>', unsafe_allow_html=True)
+
+col1, col2 = st.columns([3, 1])
+with col1:
+    query = st.text_input("Search", placeholder="e.g. wireless mouse", label_visibility="collapsed")
+with col2:
+    max_sources = st.selectbox("Sources", [2, 3, 4, 5], index=1, label_visibility="collapsed")
+
+search_clicked = st.button("Find Best Prices", type="primary", use_container_width=True)
+
+if search_clicked and query:
+    with st.spinner(f"Searching, scraping, and comparing prices for '{query}'..."):
+        all_results = asyncio.run(find_best_prices(query, max_sources=max_sources))
+
+        if all_results:
+            previous = get_previous_run(query)
+            diffed_all = compute_diff(all_results, previous)
+            save_run_results(query, diffed_all)
+
+            top_results = diffed_all[:max_sources]
+
+            safe_name = "".join(c if c.isalnum() else "_" for c in query)[:40]
+            excel_path = f"output_{safe_name}.xlsx"
+            write_excel(top_results, excel_path)
+
+            st.session_state["results"] = top_results
+            st.session_state["excel_path"] = excel_path
+        else:
+            st.session_state["results"] = []
+            st.session_state["excel_path"] = None
+
+if st.session_state.get("results"):
+    results = st.session_state["results"]
+    st.success(f"Found {len(results)} results")
+
+    for r in results:
+        status = r.get("diff_status", "")
+        badge_html = ""
+        if status == "New":
+            badge_html = '<span class="badge badge-new">NEW</span>'
+        elif "Price Changed" in status:
+            badge_html = f'<span class="badge badge-changed">{status.upper()}</span>'
+        elif status == "Removed":
+            badge_html = '<span class="badge badge-removed">REMOVED</span>'
+
+        st.markdown(f"""
+        <div class="result-card">
+            <div class="result-title">{r.get('title', 'Unknown')}</div>
+            <div class="result-source">{r.get('source_url', '')}</div>
+            <div class="result-price">{r.get('price', 'N/A')}</div>
+            {badge_html}
+        </div>
+        """, unsafe_allow_html=True)
+
+    excel_path = st.session_state.get("excel_path")
+    if excel_path and os.path.exists(excel_path):
+        with open(excel_path, "rb") as f:
+            excel_bytes = f.read()
+        st.download_button(
+            label="⬇ Download Excel",
+            data=excel_bytes,
+            file_name=excel_path,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
+elif "results" in st.session_state and not st.session_state["results"]:
+    st.warning("No results found. Try a different search term.")
+</file>
+
+<file path="src/__init__.py">
+
+</file>
+
+<file path="src/assistant.py">
+import asyncio
+import os
+import re
+import sys
+
+from storage.db import get_tracked_sources, save_tracked_sources
+
+sys.path.append(os.path.dirname(__file__))
+from diff.diff_engine import compute_diff, get_previous_run
+from diff.excel_writer import write_excel
+from discovery.product_search import search_products
+from extractor.schema_extractor import DataExtractor
+from scraper.engine import ScraperEngine
+from storage.db import save_run_results
+
+
+def _parse_price(price_str) -> float | None:
+    if not price_str:
+        return None
+    match = re.search(r"[\d,]+\.?\d*", str(price_str))
+    if not match:
+        return None
+    return float(match.group().replace(",", ""))
+
+
+async def _scrape_source(scraper, extractor, url: str, search_query: str, fields: list[str] = None, notes: str = "") -> list[dict]:
+    """Scrapes one URL and returns a list of matching results found there (may be empty)."""
+    fields = fields or ["title", "price", "description"]
+    field_list = ", ".join(fields)
+
+    instruction = (
+        f"This page may or may not be relevant to: '{search_query}'. "
+        f"Additional context: {notes} " if notes else
+        f"This page may or may not be relevant to: '{search_query}'. "
+    )
+    instruction += (
+        f"Find every distinct item on this page genuinely matching this request — "
+        f"include an item even if you can only fill in SOME of the fields for it; "
+        f"partial data is expected and fine, do not skip an item just because some fields are missing. "
+        f"For each match, extract exactly these fields: {field_list}. "
+        f"Use null ONLY for a field that this specific page doesn't mention — "
+        f"null means 'not shown here', not 'confirmed absent'. Never invent a value. "
+        f"For any yes/no field (e.g. 'has_website'), answer true only with direct positive evidence "
+        f"on this page, otherwise null (not false). "
+        f"Return ONLY a JSON array of objects, each with exactly these keys: {field_list}. "
+        f"Only return an empty array if there are truly NO items on this page matching the request at all."
+    )
+
+    try:
+        html = await scraper.fetch_html(url)
+        items = extractor.extract_list(html=html, instruction=instruction)
+
+        if not items:
+            print(f"  ~ Text extraction found nothing on {url}, trying vision fallback...")
+            screenshot = await scraper.fetch_screenshot(url)
+            items = extractor.extract_from_image(screenshot, instruction)
+
+        for item in items:
+            item["source_url"] = url
+        return items
+    except Exception as e:
+        print(f"  ! Failed on {url}: {e}")
+        return []
+    try:
+        html = await scraper.fetch_html(url)
+        items = extractor.extract_list(html=html, instruction=instruction)
+        for item in items:
+            item["source_url"] = url
+        return items
+    except Exception as e:
+        print(f"  ! Failed on {url}: {e}")
+        return []
+
+
+async def find_best_prices(product_query: str, max_sources: int = 3) -> list[dict]:
+    """
+    Returns ALL matching items found, ranked by price (cheapest first).
+    Callers decide how many to actually display/save as "top N" —
+    but diffing/history should always use the full list, not a trimmed one,
+    or items look falsely "Removed" just for dropping out of a ranking cutoff.
+    """
+    print(f"Searching for: {product_query}...")
+
+    urls = get_tracked_sources(product_query)
+    if urls:
+        print(f"Reusing {len(urls)} previously-tracked source(s) for consistent comparison.")
+    else:
+        urls = await search_products(product_query, max_results=max_sources)
+        if urls:
+            save_tracked_sources(product_query, urls)
+
+    if not urls:
+        print("No sources found.")
+        return []
+
+    print(f"Found {len(urls)} sources. Scraping each for matching products...\n")
+
+    scraper = ScraperEngine()
+    extractor = DataExtractor()
+
+    tasks = [_scrape_source(scraper, extractor, url, product_query) for url in urls]
+    results_per_source = await asyncio.gather(*tasks)
+
+    all_items = [item for sublist in results_per_source for item in sublist]
+
+    for item in all_items:
+        item["_numeric_price"] = _parse_price(item.get("price"))
+    priced_items = [i for i in all_items if i["_numeric_price"] is not None]
+    priced_items.sort(key=lambda i: i["_numeric_price"])
+    for item in priced_items:
+        del item["_numeric_price"]
+
+    print(f"Found {len(all_items)} total matching items, {len(priced_items)} with usable prices.")
+    return priced_items
+
+
+if __name__ == "__main__":
+    query = "web scraping freelance jobs"
+    all_results = asyncio.run(find_best_prices(query, max_sources=3))
+
+    if all_results:
+        previous = get_previous_run(query)
+        diffed_all = compute_diff(all_results, previous)
+
+        # Save the FULL diffed pool to history (so nothing looks falsely "Removed" later)
+        save_run_results(query, diffed_all)
+
+        # Only the top 3 go to Excel/display
+        top_results = diffed_all[:3]
+
+        print("\nTop matches (with diff status):")
+        for r in top_results:
+            print(r)
+
+        write_excel(top_results, "output.xlsx")
+        print(f"\nSaved top {len(top_results)} results to output.xlsx")
+    else:
+        print("\nNothing to save.")
+</file>
+
+<file path="src/config.py">
+"""
+Central configuration for ACES. Single source of truth for tunable values —
+change a setting here instead of hunting through multiple files.
+"""
+
+# --- Scraper settings ---
+MAX_CONCURRENT_BROWSERS = 2
+DEFAULT_TIMEOUT_MS = 60000
+
+# --- LLM model selection (per provider) ---
+GEMINI_MODEL = "gemini-3.5-flash-lite"
+GROQ_MODEL = "openai/gpt-oss-20b"
+OPENROUTER_MODEL = "openrouter/free"
+
+# --- LLM call behavior ---
+LLM_TIMEOUT_SECONDS = 20
+LLM_PROVIDER_ORDER = ["gemini", "groq", "openrouter"]
+
+# --- Extraction ---
+HTML_TRUNCATE_SINGLE = 8000
+HTML_TRUNCATE_LIST = 40000
+
+# --- Strategy memory ---
+STRATEGY_TIMEOUT_INCREMENT_MS = 30000
+STRATEGY_MAX_TIMEOUT_MS = 120000
+</file>
+
+<file path="src/factory.py">
+
+</file>
+
+<file path="src/interfaces.py">
+
+</file>
+
+<file path="src/pipeline.py">
+import asyncio
+import sys
+import os
+
+sys.path.append(os.path.dirname(__file__))
+from scraper.engine import ScraperEngine
+from extractor.schema_extractor import DataExtractor
+from diff.excel_writer import write_excel
+
+
+async def run_list(url: str, instruction: str) -> list[dict]:
+    scraper = ScraperEngine()
+    extractor = DataExtractor()
+
+    html = await scraper.fetch_html(url)
+    data = extractor.extract_list(html=html, instruction=instruction)
+    return data
+
+
+if __name__ == "__main__":
+    url = "https://books.toscrape.com/catalogue/category/books/mystery_3/index.html"
+    instruction = (
+        "Extract every book listed on this page. "
+        "For each book, give: title, price, availability. "
+        "Return a JSON array with keys: title, price, availability"
+    )
+
+    results = asyncio.run(run_list(url, instruction))
+    write_excel(results, "output.xlsx")
+    print(f"\nDone. Saved {len(results)} records to output.xlsx")
+</file>
+
+<file path="supabase/schema.sql">
+-- Stores every extracted item from every run, for history/diffing later
+create table if not exists run_history (
+    id bigint generated always as identity primary key,
+    query text not null,
+    source_url text,
+    data jsonb not null,
+    created_at timestamptz not null default now()
+);
+
+-- Anti-bot strategy memory per domain (Phase 4 groundwork)
+create table if not exists strategies (
+    domain text primary key,
+    strategy jsonb not null default '{}'::jsonb,
+    updated_at timestamptz not null default now()
+);
+
+-- Token/cost/execution tracking per run
+create table if not exists audit_logs (
+    id bigint generated always as identity primary key,
+    event text not null,
+    provider text,
+    query text,
+    details jsonb,
+    created_at timestamptz not null default now()
+);
+
+create index if not exists idx_run_history_query on run_history (query);
+create index if not exists idx_run_history_created_at on run_history (created_at);
+
+-- Remembers which source URLs were used for a given query, so repeat
+-- searches compare apples-to-apples instead of hitting random new sources
+create table if not exists tracked_sources (
+    id bigint generated always as identity primary key,
+    query text not null,
+    url text not null,
+    created_at timestamptz not null default now(),
+    unique (query, url)
+);
+
+alter table tracked_sources enable row level security;
+
+alter table tracked_sources add column if not exists client_id text not null default 'default';
+alter table run_history add column if not exists client_id text not null default 'default';
+</file>
+
+<file path="tests/unit/test_stealth.py">
+import asyncio
+from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
+
+
+async def check(use_stealth: bool):
+    if use_stealth:
+        async with Stealth().use_async(async_playwright()) as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
+            webdriver_flag = await page.evaluate("navigator.webdriver")
+            await browser.close()
+            return webdriver_flag
+    else:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
+            webdriver_flag = await page.evaluate("navigator.webdriver")
+            await browser.close()
+            return webdriver_flag
+
+
+async def main():
+    without_stealth = await check(use_stealth=False)
+    with_stealth = await check(use_stealth=True)
+    print(f"navigator.webdriver WITHOUT stealth: {without_stealth}  (True = detectable as a bot)")
+    print(f"navigator.webdriver WITH stealth:    {with_stealth}  (should be False/undefined)")
+
+
+asyncio.run(main())
+</file>
+
+<file path=".env.example">
+
+</file>
+
+<file path=".gitignore">
+.env
+__pycache__/
+*.pyc
+.venv/
+*.xlsx
+.pytest_cache/
+snapshots/
+*.sqlite
+</file>
+
+<file path="check_apis.py">
+import os
+from dotenv import load_dotenv
+
+load_dotenv()  # reads the .env file into environment variables
+
+load_dotenv()
+
+
+PROMPT = "Reply with exactly one short sentence confirming you are working."
+
+def test_gemini():
+    import google.generativeai as genai
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    model = genai.GenerativeModel("gemini-3.5-flash-lite")
+    response = model.generate_content(PROMPT)
+    return response.text.strip()
+
+def test_groq():
+    from openai import OpenAI
+    client = OpenAI(
+        api_key=os.getenv("GROQ_API_KEY"),
+        base_url="https://api.groq.com/openai/v1",
+    )
+    response = client.chat.completions.create(
+        model="openai/gpt-oss-20b",
+        messages=[{"role": "user", "content": PROMPT}],
+    )
+    return response.choices[0].message.content.strip()
+
+
+def test_openrouter():
+    from openai import OpenAI
+    client = OpenAI(
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        base_url="https://openrouter.ai/api/v1",
+    )
+    response = client.chat.completions.create(
+        model="openrouter/free",
+        messages=[{"role": "user", "content": PROMPT}],
+    )
+    return response.choices[0].message.content.strip()
+
+if __name__ == "__main__":
+    tests = {
+        "Gemini": test_gemini,
+        "Groq": test_groq,
+        "OpenRouter": test_openrouter,
+    }
+    for name, fn in tests.items():
+        print(f"\n--- Testing {name} ---")
+        try:
+            result = fn()
+            print(f"✅ {name} responded: {result}")
+        except Exception as e:
+            print(f"❌ {name} FAILED: {e}")
+</file>
+
+<file path="debug_yp.py">
+import asyncio
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
+from scraper.engine import ScraperEngine
+
+async def main():
+    scraper = ScraperEngine()
+    html = await scraper.fetch_html("https://www.yellowpages.com/search?search_terms=pizza+shops")
+    print(html[:2000])
+
+asyncio.run(main())
+</file>
+
+<file path="diagnose_daraz.py">
+import asyncio
+from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
+
+
+async def main():
+    async with Stealth().use_async(async_playwright()) as p:
+        browser = await p.chromium.launch(headless=False)  # visible window this time
+        page = await browser.new_page()
+        print("Navigating... watch the browser window that pops up.")
+        try:
+            await page.goto("https://www.daraz.pk/mouse/", wait_until="domcontentloaded", timeout=60000)
+            print("SUCCESS — page loaded.")
+        except Exception as e:
+            print(f"FAILED: {e}")
+        print("\nLeaving browser open for 15 seconds so you can look at it...")
+        await asyncio.sleep(15)
+        await browser.close()
+
+
+asyncio.run(main())
+</file>
+
+<file path="README.md">
+
+</file>
+
+<file path="requirements.txt">
+playwright==1.47.0
+playwright-stealth>=2.0.0
+pandas==2.2.2
+openpyxl==3.1.5
+supabase>=2.10.0
+python-dotenv==1.0.1
+openai==1.44.0
+google-generativeai==0.8.1
+mistralai==1.0.3
+streamlit==1.38.0
+pytest==8.3.2
+ruff==0.6.4
+beautifulsoup4==4.12.3
+lxml==5.3.0
+setuptools<81
+requests>=2.32.3
+</file>
+
+<file path="test_pagination.py">
+import asyncio
+import sys
+sys.path.append("src")
+from scraper.engine import ScraperEngine
+
+async def main():
+    scraper = ScraperEngine()
+    pages = await scraper.fetch_paginated(
+        "https://books.toscrape.com/catalogue/category/books/mystery_3/index.html",
+        max_pages=3,
+        next_link_selector="li.next a",
+    )
+    print(f"\nFetched {len(pages)} pages, sizes: {[len(p) for p in pages]}")
+
+asyncio.run(main())
+</file>
+
+<file path="test_vision.py">
+import asyncio
+import sys, os
+sys.path.append("src")
+from scraper.engine import ScraperEngine
+from extractor.schema_extractor import DataExtractor
+
+async def main():
+    scraper = ScraperEngine()
+    extractor = DataExtractor()
+
+    screenshot = await scraper.fetch_screenshot("https://books.toscrape.com/catalogue/a-light-in-the-attic_1000/index.html")
+    items = extractor.extract_from_image(
+        screenshot,
+        instruction="Find the book title and price shown on this page. Return as JSON with keys: title, price."
+    )
+    print(items)
+
+asyncio.run(main())
+</file>
+
+</files>
