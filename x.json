@@ -1,0 +1,17 @@
+[
+  {
+    "title": "A",
+    "price": "$1",
+    "stock": 5
+  },
+  {
+    "title": "B",
+    "price": "$2",
+    "stock": 0
+  },
+  {
+    "title": "C",
+    "price": null,
+    "stock": 12
+  }
+]

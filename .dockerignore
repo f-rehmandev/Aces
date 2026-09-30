@@ -1,0 +1,53 @@
+# --- secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Python artifacts ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# --- databases / caches ---
+*.sqlite
+*.db
+
+# --- notebooks & local scratch ---
+.ipynb_checkpoints/
+x.json
+pizza_raw.csv
+output*.xlsx
+*.xlsx
+!tests/**/*.xlsx
+
+# --- version control & IDE ---
+.git/
+.gitignore
+.vscode/
+.idea/
+*.swp
+
+# --- OS noise ---
+.DS_Store
+Thumbs.db
+
+# --- CI / docs (not needed inside the image) ---
+.github/
+docs/
+*.md
+!README.md
+
+# --- tests & scripts (small image, no dev workflow needed at runtime) ---
+tests/
+scripts/
+check_apis.py
+debug_yp.py
+diagnose_daraz.py
+test_pagination.py
+test_vision.py
+conftest.py
+pytest.ini

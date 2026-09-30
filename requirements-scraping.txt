@@ -1,0 +1,16 @@
+# ============================================================================
+# ACES — scraping-only dependencies
+#
+# SeleniumBase hard-pins several core packages (packaging>=25, exact
+# pytest==8.3.x, requests==2.31.0), which conflicts with Streamlit 1.38's
+# packaging<25 pin. They cannot share a Python environment.
+#
+# Install ONLY in the container (worker / API), where Streamlit is not
+# installed:
+#     pip install -r requirements.txt -r requirements-scraping.txt
+#
+# Do NOT install this file in a local dev env that also has Streamlit —
+# pip will refuse to resolve the tree.
+# ============================================================================
+
+seleniumbase>=4.30.0

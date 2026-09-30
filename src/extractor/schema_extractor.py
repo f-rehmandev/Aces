@@ -1,17 +1,15 @@
-import google.generativeai as genai
-import os
-from dotenv import load_dotenv
-load_dotenv()
-from extractor.html_cleaner import clean_html
 import json
 import logging
-import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-import config
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+from src.extractor.html_cleaner import clean_html
 from src.llm.router import LLMRouter
+from src import config
+
+load_dotenv()
 
 logger = logging.getLogger("data_extractor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -21,13 +19,43 @@ class DataExtractor:
     """
     Uses an LLM to discover a schema and extract structured data from raw HTML,
     without any hardcoded CSS selectors.
+
+    Token usage is accumulated across every call this instance makes so
+    the pipeline can meter LLM cost per run (§41.4). Callers should call
+    `reset_usage()` before starting a new run if the extractor instance
+    is reused.
     """
 
     def __init__(self, router: LLMRouter = None):
         self.router = router or LLMRouter()
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.call_count = 0
+        # Vision is metered as a distinct resource type (§41.4 — VISION_CALL
+        # is per-invocation, not per-token). `extract_from_image` increments
+        # this on every successful response from the multimodal model.
+        self.vision_call_count = 0
 
+    # ------------------------------------------------------------------
+    # Usage metering (§41.4)
+    # ------------------------------------------------------------------
+    def _record_usage(self, result: dict) -> None:
+        """Accumulate token counts from a single router.call() result."""
+        self.total_input_tokens += int(result.get("input_tokens", 0) or 0)
+        self.total_output_tokens += int(result.get("output_tokens", 0) or 0)
+        self.call_count += 1
+
+    def reset_usage(self) -> None:
+        """Zero the running counters. Called by PipelineRunner at run start."""
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.call_count = 0
+        self.vision_call_count = 0
+
+    # ------------------------------------------------------------------
+    # Single-record extraction
+    # ------------------------------------------------------------------
     def extract(self, html: str, instruction: str) -> dict:
-        # Keep the HTML short-ish for free-tier token limits during dev
         trimmed_html = clean_html(html)[:config.HTML_TRUNCATE_SINGLE]
 
         prompt = f"""You are a data extraction engine. Given raw HTML, extract the requested data.
@@ -40,9 +68,9 @@ HTML:
 Respond with ONLY valid JSON. No explanation, no markdown code fences, just the raw JSON object."""
 
         result = self.router.call(prompt)
+        self._record_usage(result)
         raw_text = result["text"]
 
-        # Models sometimes wrap JSON in ```json fences anyway — strip if present
         cleaned = raw_text.strip()
         if cleaned.startswith("```"):
             cleaned = cleaned.split("```")[1]
@@ -59,6 +87,9 @@ Respond with ONLY valid JSON. No explanation, no markdown code fences, just the 
         logger.info(f"Extracted via {result['provider']}: {data}")
         return data
 
+    # ------------------------------------------------------------------
+    # List extraction
+    # ------------------------------------------------------------------
     def extract_list(self, html: str, instruction: str) -> list[dict]:
         trimmed_html = clean_html(html)[:config.HTML_TRUNCATE_LIST]
 
@@ -72,6 +103,7 @@ HTML:
 Respond with ONLY a valid JSON array of objects. No explanation, no markdown code fences, just the raw JSON array."""
 
         result = self.router.call(prompt)
+        self._record_usage(result)
         raw_text = result["text"]
 
         cleaned = raw_text.strip()
@@ -93,12 +125,20 @@ Respond with ONLY a valid JSON array of objects. No explanation, no markdown cod
         logger.info(f"Extracted {len(data)} items via {result['provider']}")
         return data
 
-
+    # ------------------------------------------------------------------
+    # Vision fallback (bypasses the router — token metering not wired yet)
+    # ------------------------------------------------------------------
     def extract_from_image(self, image_bytes: bytes, instruction: str) -> list[dict]:
         """
         Vision-based extraction fallback: sends a screenshot directly to Gemini
         when text-based HTML extraction isn't reliable (heavy JS, canvas rendering,
         content baked into images). Used for self-healing when normal extraction fails.
+
+        Metering note: this path calls genai directly rather than through the
+        router, so its *token* usage is not included in `total_input_tokens` /
+        `total_output_tokens`. It is metered as a distinct resource type — each
+        invocation increments `vision_call_count`, which the pipeline writes
+        as a VISION_CALL usage event (§41.4).
         """
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel("gemini-3.5-flash-lite")
@@ -108,6 +148,9 @@ Return ONLY a valid JSON array of objects. No explanation, no markdown fences.""
 
         image_part = {"mime_type": "image/png", "data": image_bytes}
         response = model.generate_content([prompt, image_part])
+        # Count the invocation immediately — the model was billed even if
+        # the JSON parse below fails.
+        self.vision_call_count += 1
         raw_text = response.text.strip()
 
         if raw_text.startswith("```"):
@@ -128,6 +171,7 @@ Return ONLY a valid JSON array of objects. No explanation, no markdown fences.""
         logger.info(f"Vision-extracted {len(data)} items")
         return data
 
+
 if __name__ == "__main__":
     sample_html = """
     <html><body>
@@ -145,8 +189,7 @@ if __name__ == "__main__":
     """
 
     extractor = DataExtractor()
-    
-    # Testing the single extraction
+
     single_data = extractor.extract(
         html=sample_html,
         instruction="Extract the first product name, price, and rating as JSON with keys: name, price, rating"
@@ -154,10 +197,12 @@ if __name__ == "__main__":
     print("\nExtracted single data:")
     print(json.dumps(single_data, indent=2))
 
-    # Testing the list extraction
     list_data = extractor.extract_list(
         html=sample_html,
         instruction="Extract all products. For each, get the name, price, and rating. Keys should be: name, price, rating"
     )
     print("\nExtracted list data:")
     print(json.dumps(list_data, indent=2))
+
+    print(f"\nUsage: {extractor.call_count} call(s), "
+          f"{extractor.total_input_tokens} in / {extractor.total_output_tokens} out")

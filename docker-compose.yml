@@ -1,0 +1,95 @@
+# ============================================================================
+# ACES — local + single-node production compose
+#
+# Usage:
+#     cp .env.example .env      # then fill in real values
+#     docker compose up --build
+#
+# Services:
+#     aces-api      HTTP API + WorkerPool + SchedulerLoop (all in-process)
+#     aces-worker   (optional profile "scale") extra workers, no HTTP
+#
+# The queue is durable when SUPABASE_URL is set; otherwise in-memory
+# (per-process, which is fine for local dev but not for real scaling).
+#
+# To scale out workers on a single host:
+#     docker compose --profile scale up --build
+#     docker compose --profile scale up --scale aces-worker=4
+# ============================================================================
+
+name: aces
+
+services:
+
+  # --------------------------------------------------------------------------
+  # ACES API — the primary service
+  # --------------------------------------------------------------------------
+  aces-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aces:local
+    container_name: aces-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Override only what compose needs to control
+      ACES_MODE: api
+      ACES_PORT: "8000"
+      ACES_LOG_LEVEL: ${ACES_LOG_LEVEL:-INFO}
+      # Playwright needs writable dirs in the container
+      HOME: /home/aces
+    ports:
+      - "${ACES_API_PORT:-8000}:8000"
+    volumes:
+      # Persist local_file connector output across restarts
+      - aces_output:/app/output
+      # Optional: mount a local dir for one-off exports
+      # - ./local_exports:/app/local_exports
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 30s
+    # Playwright needs an increased shared memory size
+    shm_size: "1gb"
+    # If you want to cap resources
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "2.0"
+    #       memory: 2G
+
+  # --------------------------------------------------------------------------
+  # ACES Worker — optional extra worker process (no HTTP)
+  # Enable with:  docker compose --profile scale up --build
+  # --------------------------------------------------------------------------
+  aces-worker:
+    profiles: ["scale"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aces:local
+    container_name: aces-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      ACES_MODE: worker
+      ACES_WORKER_COUNT: ${ACES_WORKER_COUNT_WORKER:-2}
+      ACES_LOG_LEVEL: ${ACES_LOG_LEVEL:-INFO}
+      HOME: /home/aces
+    command: ["worker"]
+    volumes:
+      - aces_output:/app/output
+    depends_on:
+      - aces-api
+    shm_size: "1gb"
+    stop_grace_period: 30s
+
+volumes:
+  aces_output:
+    driver: local

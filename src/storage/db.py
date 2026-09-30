@@ -9,8 +9,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 
 def get_client() -> Client:
+    """
+    Service-role Supabase client for BACKEND writes.
+
+    Uses SUPABASE_SERVICE_KEY, which bypasses RLS. This client must never
+    be exposed to a browser or to user-facing code paths. User-scoped
+    reads go through src.auth.supabase_backend.SupabaseAuthBackend, which
+    uses the publishable key + the user's own JWT so RLS applies.
+    """
     url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY")
+    key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
+    if not url or not key:
+        raise RuntimeError(
+            "SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in .env "
+            "(backend writes need the service key; the publishable key "
+            "is only for user-facing auth)."
+        )
     return create_client(url, key)
 
 

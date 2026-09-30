@@ -1,8 +1,9 @@
+﻿node_modules/
 .env
+.env.*
 __pycache__/
 *.pyc
 .venv/
-*.xlsx
-.pytest_cache/
-snapshots/
-*.sqlite
+venv/
+repomix-output.xml
+supabase/.temp/

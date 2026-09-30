@@ -1,0 +1,12 @@
+# ============================================================================
+# ACES — dev / test dependencies
+#
+# Local dev only. The container never runs the test suite, and SeleniumBase
+# (see requirements-scraping.txt) pins an exact pytest version that would
+# conflict if both were installed together.
+#
+# Install:  pip install -r requirements.txt -r requirements-ui.txt -r requirements-dev.txt
+# ============================================================================
+
+pytest==8.3.2
+ruff==0.6.4

@@ -1,17 +1,14 @@
 import asyncio
-import sys
-import os
 
-sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from assistant_core.command_parser import parse_command
-from discovery.product_search import search_products
-from scraper.engine import ScraperEngine
-from extractor.schema_extractor import DataExtractor
-from storage.db import get_tracked_sources, save_tracked_sources, save_run_results
-from diff.diff_engine import get_previous_run, compute_diff
-from diff.excel_writer import write_excel
-from assistant import _scrape_source, _parse_price
-from storage.audit_logger import Timer, log_event
+from src.assistant_core.command_parser import parse_command
+from src.discovery.product_search import search_products
+from src.scraper.engine import ScraperEngine
+from src.extractor.schema_extractor import DataExtractor
+from src.storage.db import get_tracked_sources, save_tracked_sources, save_run_results
+from src.diff.diff_engine import get_previous_run, compute_diff
+from src.diff.excel_writer import write_excel
+from src.assistant import _scrape_source, _parse_price
+from src.storage.audit_logger import Timer, log_event
 
 
 async def run_task(user_request: str, client_id: str = "default") -> list[dict]:
@@ -28,10 +25,10 @@ async def run_task(user_request: str, client_id: str = "default") -> list[dict]:
 async def _run_task_inner(user_request: str, client_id: str = "default") -> list[dict]:
     spec = parse_command(user_request)
     spec.client_id = client_id
-    search_query = spec.source_hint
-    target_count = spec.min_records
-    fields = spec.fields
-    notes = spec.filters
+    search_query = spec.target.source_hint
+    target_count = spec.quality.min_records
+    fields = spec.field_names
+    notes = spec.constraints.filters
 
     print(f"Plan: search '{search_query}', want ~{target_count} results, fields: {fields}")
     if getattr(spec, "ambiguity_note", ""):

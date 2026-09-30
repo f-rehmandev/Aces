@@ -1,0 +1,10 @@
+# ============================================================================
+# ACES — UI dependencies
+#
+# Installed ONLY in the local dev environment. The container has no
+# need for a browser UI; it serves HTTP.
+#
+# Install:  pip install -r requirements.txt -r requirements-ui.txt
+# ============================================================================
+
+streamlit==1.38.0
