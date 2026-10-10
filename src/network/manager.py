@@ -82,6 +82,7 @@ for _n in _TIER_3_ORDER:
 _TIER_RANK = {
     Tier.TIER_0.value: 0,
     Tier.TIER_1.value: 1,
+    Tier.TIER_1_5.value: 1.5,
     Tier.TIER_2.value: 2,
     Tier.TIER_3.value: 3,
 }
@@ -179,7 +180,11 @@ class NetworkManager:
         zenrows: Any = None,
         zenscrape: Any = None,
         apify: Any = None,
+        aws_egress: Any = None,
+        oci_egress: Any = None,
         hitl: Any = None,
+        health_store: Any = None,
+        cost_policy: Any = None,
         jitter: Optional[Jitter] = None,
         default_route: Optional[NetworkRoute] = None,
     ):
@@ -214,6 +219,13 @@ class NetworkManager:
             self._providers["apify"] = apify
         if hitl is not None:
             self._providers["hitl"] = hitl
+        if aws_egress is not None:
+            self._providers["aws_egress"] = aws_egress
+        if oci_egress is not None:
+            self._providers["oci_egress"] = oci_egress
+            
+        self.health_store = health_store
+        self.cost_policy = cost_policy
 
         self._jitter = jitter
         self._default_route = default_route or NetworkRoute()
@@ -266,10 +278,20 @@ class NetworkManager:
 
         # If skip_automated is set, jump straight past every automated
         # tier. HITL (appended below) will be the only chain entry.
+        _TIER_1_5_ORDER = ("oci_egress", "aws_egress")
+        aws_mode = (route.options or {}).get("egress_mode", (route.options or {}).get("aws_egress_mode", "AUTO"))
+
+        if aws_mode == "FORCE":
+            for name in _TIER_1_5_ORDER:
+                if self._providers.get(name):
+                    chain.append((Tier.TIER_1_5.value, name, self._providers[name]))
+            return chain, skipped
+
         if not skip_automated:
             for tier_value, names in (
                 (Tier.TIER_0.value, _TIER_0_ORDER),
                 (Tier.TIER_1.value, _TIER_1_ORDER),
+                (Tier.TIER_1_5.value, _TIER_1_5_ORDER),
                 (Tier.TIER_2.value, _TIER_2_ORDER),
                 (Tier.TIER_3.value, _TIER_3_ORDER),
             ):
@@ -294,6 +316,9 @@ class NetworkManager:
         hitl_enabled = bool((route.options or {}).get("hitl", False))
         if hitl_provider is not None and hitl_enabled:
             chain.append(("hitl", "hitl", hitl_provider))
+
+        if self.cost_policy:
+            chain = self.cost_policy.rank_chain(chain, self.health_store)
 
         return chain, skipped
 
@@ -385,6 +410,8 @@ class NetworkManager:
             route.query_terms = list(query_terms)
 
         chain, skipped_reasons = self._build_chain(route)
+        proxy_blocked = False
+        proxy_blocked = False
 
         if not chain:
             return FetchResult(
@@ -408,6 +435,29 @@ class NetworkManager:
         last_provider_name = ""
 
         for tier_value, provider_name, provider in chain:
+            if self.health_store and not self.health_store.is_healthy(provider_name):
+                attempts.append({
+                    "provider": provider_name,
+                    "tier": tier_value,
+                    "ok": False,
+                    "error": "quarantined",
+                })
+                last_failure_reason = "quarantined"
+                last_provider_name = provider_name
+                continue
+
+            if proxy_blocked and tier_value not in {Tier.TIER_0.value, Tier.TIER_1.value, Tier.TIER_1_5.value, "hitl"}:
+                logger.warning(f"Target-site block previously; skipping proxy tier {provider_name}")
+                continue
+
+            aws_mode = (route.options or {}).get("egress_mode", (route.options or {}).get("aws_egress_mode", "AUTO"))
+            if provider_name in ("aws_egress", "oci_egress"):
+                if aws_mode == "OFF":
+                    continue
+                if aws_mode == "AUTO":
+                    # Only invoke AWS Egress on infrastructure blocks (bot shell)
+                    if not last_failure_reason or ("bot shell" not in last_failure_reason and "block marker" not in last_failure_reason):
+                        continue
             provider_route = self._route_for(
                 route, provider_name, last_failure_reason,
             )
@@ -415,6 +465,8 @@ class NetworkManager:
             try:
                 result = await provider.fetch(url, provider_route)
             except ProviderError as e:
+                if self.health_store:
+                    self.health_store.record_failure(provider_name, str(e))
                 attempts.append({
                     "provider": provider_name,
                     "tier": tier_value,
@@ -425,13 +477,16 @@ class NetworkManager:
                 last_provider_name = provider_name
                 continue
             except Exception as e:
+                err_msg = f"{type(e).__name__}: {e}"
+                if self.health_store:
+                    self.health_store.record_failure(provider_name, err_msg)
                 attempts.append({
                     "provider": provider_name,
                     "tier": tier_value,
                     "ok": False,
-                    "error": f"{type(e).__name__}: {e}",
+                    "error": err_msg,
                 })
-                last_failure_reason = f"{type(e).__name__}: {e}"
+                last_failure_reason = err_msg
                 last_provider_name = provider_name
                 continue
 
@@ -447,6 +502,8 @@ class NetworkManager:
                 continue
 
             if result.blocked:
+                if self.health_store:
+                    self.health_store.record_block(provider_name, result.block_reason)
                 attempts.append({
                     "provider": provider_name,
                     "tier": tier_value,
@@ -457,9 +514,40 @@ class NetworkManager:
                 last_failure_reason = result.block_reason or "blocked"
                 last_provider_name = provider_name
                 last_result = result
+
+                if "block marker" in (result.block_reason or ""):
+                    # Truncate proxy tiers from the chain (Tier 2 and 3) but keep AWS/OCI and local.
+                    # We can do this by setting a flag, or directly modifying what we attempt.
+                    # Actually, if we hit a block marker, we only allow fallback to Tier 1.5. No proxy tiers.
+                    # A robust way: if provider_name is already a proxy or we are already at Tier >= 2, we return.
+                    # Otherwise, we just skip any future proxy tiers. We can do this by appending to a skipped set or similar,
+                    # but easy to just set `proxy_blocked = True` and then at the top of the loop check it.
+                    proxy_blocked = True
+                    # if we are ALREADY in a proxy tier, we abort
+                    if tier_value not in {Tier.TIER_0.value, Tier.TIER_1.value, Tier.TIER_1_5.value, "hitl"}:
+                        result.tier_used = Tier.NONE.value
+                        result.tier_attempts = attempts
+                        self._record_provider_usage(result)
+                        self._attach_backward_compat_metadata(result, skipped_reasons, route)
+                        return result
+
+
                 continue
 
-            # ----- Success -----
+            # ----- Got a final response (success or non-block error) -----
+            if self.health_store:
+                if result.is_ok:
+                    self.health_store.record_success(
+                        provider_name,
+                        latency_ms=getattr(result, "latency_ms", 0) or 0,
+                        credits=getattr(result, "credits_used", 0) or 0,
+                    )
+                else:
+                    self.health_store.record_failure(
+                        provider_name,
+                        f"HTTP {result.status_code}" if result.status_code else "invalid result"
+                    )
+
             result.tier_used = tier_value
             result.tier_attempts = attempts + [{
                 "provider": provider_name,
@@ -474,7 +562,6 @@ class NetworkManager:
                 f"({tier_value}) after {len(attempts)} failed attempt(s)"
             )
             self._record_provider_usage(result)
-            return result
             return result
 
         # ----- Every provider failed -----
